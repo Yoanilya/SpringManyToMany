@@ -45,7 +45,7 @@ productoRepo repoProducto;
     return repo.save(imagen);
 
   }
-  @GetMapping("imagen/{productId}")
+  @GetMapping("imagenes/{productId}")
   public Set<Image>  getImagensByProduct(@PathVariable String productId) {
     Optional<Producto> p = repoProducto.findById(productId);
     if(p.isPresent()){

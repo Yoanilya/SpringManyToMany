@@ -37,7 +37,7 @@ public class Comment {
     private String imagen1;
     private String imagen2;
     
-    @JsonBackReference
+    @JsonBackReference("producto-comentarios")
     @ManyToOne(fetch=FetchType.LAZY)
     @Setter
     private Producto producto;

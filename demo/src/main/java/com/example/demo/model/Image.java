@@ -35,7 +35,7 @@ public class Image {
     private String tamanio;
     private boolean responsiva;
     
-    @JsonBackReference
+    @JsonBackReference("producto-imagenes")
     @ManyToOne(fetch=FetchType.LAZY)
     @Setter 
     private Producto producto;

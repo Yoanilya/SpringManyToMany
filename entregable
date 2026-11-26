@@ -1,0 +1,92 @@
+# Entregable - Spring Boot con JPA: Relación Muchos a Muchos (`@ManyToMany`)
+
+## 1. Análisis de `@ManyToMany` y `@JoinTable` en `Department`
+
+**Pregunta:** ¿Cómo afectará JPA a la base de datos? ¿Qué tabla creará y qué columnas tendrá?
+
+- Al marcar `Department` con `@Entity` y `@Table(name = "Categorias")`, JPA/Hibernate crea la tabla **`categorias`** con las columnas `id` (clave primaria `varchar(255)` generada como UUID), `nombre`, `descripcion`, `tipo`, `icono` e `imagen_navbar`.
+- Como una relación muchos-a-muchos no puede representarse con una sola columna de llave foránea en `producto` ni en `categorias`, la anotación `@ManyToMany` junto con `@JoinTable(name = "producto_deparments", ...)` instruye a JPA a crear una **tabla intermedia (de unión)** llamada **`producto_deparments`**.
+- **Columnas y restricciones creadas en `producto_deparments`**:
+  - `product_id` (`varchar(255) not null`)
+  - `deparments_id` (`varchar(255) not null`)
+  - **Clave primaria compuesta**: `primary key (deparments_id, product_id)`, que evita asociar dos veces el mismo par categoría–producto.
+  - **Llaves foráneas**:
+    - `foreign key (product_id) references categorias` (porque `joinColumns` en `@JoinTable` siempre referencia a la entidad propietaria donde está declarada la anotación, es decir, `Department` / tabla `categorias`).
+    - `foreign key (deparments_id) references producto` (porque `inverseJoinColumns` siempre referencia a la entidad destino de la colección, es decir, `Producto` / tabla `producto`).
+  - *Nota observada al revisar el DDL real*: aunque los nombres de columna indicados en el ejercicio quedaron invertidos respecto a las tablas que referencian (`product_id -> categorias` y `deparments_id -> producto`), JPA enlaza cada llave foránea según `joinColumns` (propietario) e `inverseJoinColumns` (inverso), y la relación funciona correctamente.
+
+### Esquema SQL generado por Hibernate
+
+```sql
+create table categorias (
+    descripcion varchar(255),
+    icono varchar(255),
+    id varchar(255) not null,
+    imagen_navbar varchar(255),
+    nombre varchar(255),
+    tipo varchar(255),
+    primary key (id)
+);
+
+create table producto (
+    fecha_caducidad date,
+    precio_unitario float(24) not null,
+    descripcion varchar(255),
+    id varchar(255) not null,
+    lote varchar(255),
+    nombre varchar(255),
+    primary key (id)
+);
+
+create table producto_deparments (
+    deparments_id varchar(255) not null,
+    product_id varchar(255) not null,
+    primary key (deparments_id, product_id)
+);
+
+alter table if exists producto_deparments
+    add constraint FKt7rd9tlp1d8602thjkv1bf8dn
+    foreign key (deparments_id) references producto;
+
+alter table if exists producto_deparments
+    add constraint FKq1couy6nmyc1hldet8lfom095
+    foreign key (product_id) references categorias;
+```
+
+---
+
+## 2. Significado y uso de `@JsonIgnore` en `Producto`
+
+**Pregunta:** ¿Qué significa la anotación `@JsonIgnore` y por qué se utiliza en `Producto`?
+
+- `@JsonIgnore` pertenece a la librería **Jackson** (`com.fasterxml.jackson.annotation.JsonIgnore`) e indica que el campo anotado (`deparments` en `Producto`) debe **excluirse durante la serialización y deserialización JSON**.
+- **Por qué se utiliza en `Producto`**:
+  - La relación `Department <-> Producto` es **bidireccional** y ambos lados tienen `FetchType.EAGER`: un `Department` contiene un `Set<Producto>` (`productos`) y cada `Producto` contiene un `Set<Department>` (`deparments`).
+  - Si Jackson intentara serializar ambos lados, al convertir un `Department` a JSON serializaría sus `productos`, cada `Producto` volvería a serializar sus `deparments`, y así sucesivamente provocando una **recursión infinita** (`StackOverflowError` / `JsonMappingException`).
+  - Al anotar `Producto.deparments` con `@JsonIgnore`, al consultar categorías (`GET /categorias`, `GET /categoria/{id}`, `POST /addProductoCategoria/{productId}/{categoriaId}`) se incluye la lista de `productos` de cada categoría, pero cada producto omite el campo `deparments`, rompiendo el ciclo. Cuando sí se requieren las categorías de un producto concreto, se consultan explícitamente mediante el endpoint `GET /categoria/producto/{productId}`.
+
+---
+
+## 3. Análisis del endpoint `POST /addProductoCategoria/{productId}/{categoriaId}`
+
+### ¿Cuál es su función?
+- Asocia un **producto existente** (`productId`) con una **categoría existente** (`categoriaId`) dentro de la relación muchos-a-muchos.
+- Busca ambas entidades en la base de datos, agrega el `Producto` al conjunto `productos` del `Department` (que es el **lado propietario** de la relación) y persiste el cambio con `repo.save(d.get())`, lo que hace que Hibernate inserte el registro correspondiente en la tabla intermedia `producto_deparments`.
+
+### ¿Por qué se declaran dos repositorios (`categoriaRepo` y `productoRepo`)?
+- Cada repositorio de Spring Data JPA gestiona una entidad/tabla distinta:
+  - `categoriaRepo` permite consultar (`findById`), guardar (`save`) y administrar instancias de `Department` (tabla `categorias` y, por ser el lado propietario, sincronizar la tabla intermedia `producto_deparments`).
+  - `productoRepo` es indispensable para recuperar la entidad `Producto` existente a partir de `productId` tanto en `POST /addProductoCategoria/{productId}/{categoriaId}` (para agregar el objeto gestionado a `d.get().getProductos()`) como en `GET /categoria/producto/{productId}` (para devolver `p.get().getDeparments()`).
+
+---
+
+## 4. Comparación con las pruebas ejecutadas
+
+Se verificó el comportamiento completo mediante pruebas automatizadas (`DemoApplicationTests`):
+
+1. **`POST /producto`** y **`POST /categoria`**: generaron IDs UUID (`String`) y persistieron registros en `producto` y `categorias`.
+2. **`POST /addProductoCategoria/{productId}/{categoriaId}`**: insertó correctamente los vínculos en `producto_deparments` (un mismo producto asociado a múltiples categorías y una misma categoría asociada a múltiples productos).
+3. **`GET /categoria/producto/{productId}`**: devolvió el conjunto de categorías asociadas al producto consultado.
+4. **`GET /productos`** y **`GET /categorias`**: serializaron correctamente a JSON sin recursión infinita (confirmando la ausencia del campo `deparments` en los JSON de `Producto` por `@JsonIgnore`).
+5. **`PUT /categoria/{id}`** y **`DELETE /categoria/{id}`**: actualizaron y eliminaron la categoría limpiando sus filas en `producto_deparments` sin eliminar los productos existentes.
+6. **Metadatos JDBC**: confirmaron la existencia de la tabla `producto_deparments` con columnas `product_id` y `deparments_id` y llaves foráneas hacia `categorias` y `producto`.
